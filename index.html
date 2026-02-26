@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>VR Room Viewer - Pokemon Center</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <style>
+        body { margin:0; overflow:hidden; background:#000; font-family:sans-serif; }
+        #enterVR {
+            position:fixed;
+            top:45%;
+            left:50%;
+            transform:translate(-50%,-50%);
+            padding:20px 30px;
+            font-size:20px;
+            border:none;
+            border-radius:12px;
+            background:#e60012; /* Mario Red */
+            color:white;
+            z-index:10;
+            cursor:pointer;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+        #toggleWalking {
+            position:fixed;
+            top:60%;
+            left:50%;
+            transform:translate(-50%,-50%);
+            padding:15px 20px;
+            font-size:16px;
+            border:2px solid #e60012;
+            border-radius:10px;
+            background:rgba(255,255,255,0.9);
+            color:#e60012;
+            z-index:10;
+            cursor:pointer;
+        }
+        #toggleHands {
+            position:fixed;
+            top:70%;
+            left:50%;
+            transform:translate(-50%,-50%);
+            padding:15px 20px;
+            font-size:16px;
+            border:2px solid #e60012;
+            border-radius:10px;
+            background:rgba(255,255,255,0.9);
+            color:#e60012;
+            z-index:10;
+            cursor:pointer;
+        }
+        #infoNote {
+            position:fixed;
+            bottom:20px;
+            left:50%;
+            transform:translateX(-50%);
+            color:white;
+            font-size:12px;
+            text-align:center;
+            width:80%;
+            background:rgba(0,0,0,0.5);
+            padding:10px;
+            border-radius:5px;
+        }
+    </style>
+</head>
+<body>
+
+<button id="enterVR">Enter the world</button>
+<button id="toggleWalking">Motion Drive: OFF</button>
+<button id="toggleHands">Hand Tracking: OFF</button>
+<video id="handVideo" style="display:none;" playsinline></video>
+<audio id="bgm" src="audio.mp3" loop></audio>
+<div id="infoNote">
+    Note: Your viewer's camera hole enables 6DOF tracking on supported devices.<br>
+    Shake your device in VR to accelerate the kart. Hand tracking steers left/right.
+</div>
+
+<script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js",
+      "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/"
+    }
+  }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+
+let scene, camera, renderer, cameraRig;
+let roomModel;
+let kartModel;
+let hands;
+const clock = new THREE.Clock();
+let handMarkers = [];
+let handBones = [];
+let handScreenPositions = [];
+let pokeball;
+let pokeballState = 'INACTIVE'; // INACTIVE, FALLING, READY_TO_GRAB, HELD, THROWN
+let pokeballVelocity = new THREE.Vector3();
+let grabbingHandIndex = -1;
+let lastPalmPositions = [new THREE.Vector3(), new THREE.Vector3()];
+let palmVelocities = [new THREE.Vector3(), new THREE.Vector3()];
+let lastHandUpdateTime = [0, 0];
+let handResultCount = [0, 0];
+let lastProcessedHandResultCount = [0, 0];
+const GRAVITY = -9.8;
+const KART_MAX_SPEED = 24;
+const KART_BOOST_SPEED = 32;
+const KART_SHAKE_IMPULSE = 8;
+const KART_ROLLING_DRAG = 3.2;
+const KART_AIR_DRAG = 0.18;
+const KART_TURN_RATE = 1.65;
+const KART_STEER_SMOOTH = 8.0;
+const KART_LATERAL_SLIP = 0.16;
+const KART_LATERAL_DAMPING = 5.0;
+const TRACK_SAMPLE_GRID = 18;
+const TRACK_SAMPLE_COVERAGE = 0.7;
+const TRACK_NORMAL_MIN_Y = 0.55;
+const GROUND_SUSPENSION_STIFFNESS = 22;
+const GROUND_SUSPENSION_DAMPING = 8;
+const SHAKE_THRESHOLD_RAW = 2.4;
+const SHAKE_THRESHOLD_WITH_GRAVITY = 2.2;
+const SHAKE_COOLDOWN_MS = 350;
+
+let kartSpeed = 0;
+let kartBoostTime = 0;
+let kartSteer = 0;
+let kartSteerTarget = 0;
+let kartLateralVelocity = 0;
+let kartVerticalVelocity = 0;
+let smoothedMotionMagnitude = 0;
+let lastShakeTime = 0;
+let hasPlacedTrackStart = false;
+let groundCollisionMeshes = [];
+let groundProbeHeight = 400;
+
+const downVector = new THREE.Vector3(0, -1, 0);
+const kartForward = new THREE.Vector3();
+const kartRight = new THREE.Vector3();
+const tmpVectorA = new THREE.Vector3();
+const tmpNormal = new THREE.Vector3();
+const groundProbeOrigin = new THREE.Vector3();
+const groundRaycaster = new THREE.Raycaster();
+
+const HAND_CONNECTIONS = [
+    [0, 1], [1, 2], [2, 3], [3, 4],       // Thumb
+    [0, 5], [5, 6], [6, 7], [7, 8],       // Index
+    [0, 9], [9, 10], [10, 11], [11, 12],  // Middle
+    [0, 13], [13, 14], [14, 15], [15, 16],// Ring
+    [0, 17], [17, 18], [18, 19], [19, 20],// Pinky
+    [5, 9], [9, 13], [13, 17]             // Palm
+];
+let walkingModeEnabled = false;
+let handTrackingEnabled = false;
+
+const urlParams = new URLSearchParams(window.location.search);
+const modelName = 'circuit.glb';
+const WORLD_SCALE = 20 / 1.6;
+const HEIGHT_FACTOR = Math.sqrt(WORLD_SCALE);
+
+initHandTracking();
+init();
+animate();
+
+function initHandTracking() {
+    // @ts-ignore
+    hands = new window.Hands({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }});
+    hands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+    });
+    hands.onResults(onHandResults);
+}
+
+function toggleHandTracking() {
+    handTrackingEnabled = !handTrackingEnabled;
+    const btn = document.getElementById("toggleHands");
+    btn.innerText = `Hand Tracking: ${handTrackingEnabled ? 'ON' : 'OFF'}`;
+    btn.style.background = handTrackingEnabled ? '#e60012' : 'rgba(255,255,255,0.9)';
+    btn.style.color = handTrackingEnabled ? 'white' : '#e60012';
+
+    const videoElement = document.getElementById('handVideo');
+
+    if (handTrackingEnabled) {
+        const constraints = {
+            video: {
+                facingMode: 'environment',
+                width: { ideal: 640 },
+                height: { ideal: 480 }
+            }
+        };
+
+        navigator.mediaDevices.getUserMedia(constraints)
+            .then(stream => {
+                videoElement.srcObject = stream;
+                videoElement.play();
+                requestAnimationFrame(processVideoFrame);
+            })
+            .catch(err => {
+                console.error(err);
+                alert("Rear camera access denied or not available");
+                if (handTrackingEnabled) toggleHandTracking();
+            });
+    } else {
+        if (videoElement.srcObject) {
+            videoElement.srcObject.getTracks().forEach(track => track.stop());
+            videoElement.srcObject = null;
+        }
+        // Hide markers
+        onHandResults({multiHandLandmarks: []});
+    }
+}
+
+async function processVideoFrame() {
+    if (!handTrackingEnabled) return;
+
+    const videoElement = document.getElementById('handVideo');
+    if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
+        await hands.send({image: videoElement});
+    }
+    requestAnimationFrame(processVideoFrame);
+}
+
+function updateBone(bone, p1, p2) {
+    const dir = new THREE.Vector3().subVectors(p2, p1);
+    const length = dir.length();
+    if (length < 0.001) {
+        bone.visible = false;
+        return;
+    }
+
+    bone.position.copy(p1).addScaledVector(dir, 0.5);
+    bone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+    bone.scale.set(1, length, 1);
+    bone.visible = true;
+}
+
+function checkPalmUp(handIndex) {
+    if (!handMarkers[handIndex] || !handMarkers[handIndex][0].visible) return false;
+    const wrist = new THREE.Vector3();
+    const indexMcp = new THREE.Vector3();
+    const pinkyMcp = new THREE.Vector3();
+    handMarkers[handIndex][0].getWorldPosition(wrist);
+    handMarkers[handIndex][5].getWorldPosition(indexMcp);
+    handMarkers[handIndex][17].getWorldPosition(pinkyMcp);
+    const v1 = new THREE.Vector3().subVectors(indexMcp, wrist);
+    const v2 = new THREE.Vector3().subVectors(pinkyMcp, wrist);
+    const normal = new THREE.Vector3().crossVectors(v1, v2).normalize();
+    return Math.abs(normal.y) > 0.7;
+}
+
+function checkHandOpen(handIndex) {
+    if (!handMarkers[handIndex] || !handMarkers[handIndex][0].visible) return false;
+    const wrist = new THREE.Vector3();
+    handMarkers[handIndex][0].getWorldPosition(wrist);
+    let score = 0;
+    [8, 12, 16, 20].forEach(tipIdx => {
+        const tip = new THREE.Vector3();
+        handMarkers[handIndex][tipIdx].getWorldPosition(tip);
+        score += tip.distanceTo(wrist);
+    });
+    const mcp = new THREE.Vector3();
+    handMarkers[handIndex][9].getWorldPosition(mcp);
+    const handSize = mcp.distanceTo(wrist);
+    return score > handSize * 3.5;
+}
+
+function checkHandClosed(handIndex) {
+    if (!handMarkers[handIndex] || !handMarkers[handIndex][0].visible) return false;
+    const wrist = new THREE.Vector3();
+    handMarkers[handIndex][0].getWorldPosition(wrist);
+    let score = 0;
+    [8, 12, 16, 20].forEach(tipIdx => {
+        const tip = new THREE.Vector3();
+        handMarkers[handIndex][tipIdx].getWorldPosition(tip);
+        score += tip.distanceTo(wrist);
+    });
+    const mcp = new THREE.Vector3();
+    handMarkers[handIndex][9].getWorldPosition(mcp);
+    const handSize = mcp.distanceTo(wrist);
+    return score < handSize * 2.2;
+}
+
+function onHandResults(results) {
+    handScreenPositions = [];
+
+    // Hide all markers and bones first
+    for (let h = 0; h < 2; h++) {
+        if (handMarkers[h]) {
+            for (let i = 0; i < 21; i++) {
+                handMarkers[h][i].visible = false;
+            }
+        }
+        if (handBones[h]) {
+            for (let i = 0; i < handBones[h].length; i++) {
+                handBones[h][i].visible = false;
+            }
+        }
+    }
+
+    if (results.multiHandLandmarks) {
+        for (let h = 0; h < results.multiHandLandmarks.length; h++) {
+            if (h >= 2) break;
+            handResultCount[h]++;
+            const landmarks = results.multiHandLandmarks[h];
+            const hand = handMarkers[h];
+            const bones = handBones[h];
+            handScreenPositions.push({
+                x: landmarks[9].x,
+                y: landmarks[9].y
+            });
+
+            const points = [];
+            for (let i = 0; i < 21; i++) {
+                const l = landmarks[i];
+                const p = new THREE.Vector3(
+                    (l.x - 0.5) * 2.0,
+                    (0.5 - l.y) * 1.2,
+                    -l.z * 2.0 - 0.6
+                );
+                points.push(p);
+                hand[i].position.copy(p);
+                hand[i].visible = true;
+            }
+
+            for (let i = 0; i < HAND_CONNECTIONS.length; i++) {
+                const connection = HAND_CONNECTIONS[i];
+                updateBone(bones[i], points[connection[0]], points[connection[1]]);
+            }
+        }
+    }
+}
+
+function init() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87CEEB); // Sky blue background
+
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+    // --- CAMERA RIG ---
+    cameraRig = new THREE.Group();
+    cameraRig.position.set(0, 8, 0);
+    camera.position.set(0, 1.0, 0.05);
+    cameraRig.add(camera);
+    scene.add(cameraRig);
+
+    // Create Simple Hand Markers and Bones
+    for (let h = 0; h < 2; h++) {
+        const hand = [];
+        for (let i = 0; i < 21; i++) {
+            const sphere = new THREE.Mesh(
+                new THREE.SphereGeometry(0.01, 4, 4),
+                new THREE.MeshBasicMaterial({ color: 0x000000 }) // Simple black markers
+            );
+            sphere.visible = false;
+            camera.add(sphere);
+            hand.push(sphere);
+        }
+        handMarkers.push(hand);
+
+        const bones = [];
+        for (let i = 0; i < HAND_CONNECTIONS.length; i++) {
+            const bone = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.005, 0.005, 1, 4),
+                new THREE.MeshBasicMaterial({ color: 0x000000 })
+            );
+            bone.visible = false;
+            camera.add(bone);
+            bones.push(bone);
+        }
+        handBones.push(bones);
+    }
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true;
+    renderer.shadowMap.enabled = true;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+    document.body.appendChild(renderer.domElement);
+
+    // Lighting (Brighter for the interior)
+    const ambient = new THREE.AmbientLight(0xffffff, 1.5);
+    scene.add(ambient);
+
+    const sunLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    sunLight.position.set(5, 15, 5);
+    scene.add(sunLight);
+
+    loadRoom();
+    loadKart();
+    loadPokeball();
+
+    window.addEventListener("resize", onResize);
+    window.addEventListener("keydown", (e) => {
+        if (e.key.toLowerCase() === 'h') {
+            toggleHandTracking();
+        }
+    });
+}
+
+function loadRoom() {
+    const loader = new GLTFLoader();
+    loader.load(
+        modelName,
+        (gltf) => {
+            roomModel = gltf.scene;
+
+            roomModel.traverse((child) => {
+                if (child.isMesh) {
+                    child.castShadow = true;
+                    child.receiveShadow = true;
+                    if (child.material) child.material.side = THREE.DoubleSide;
+                }
+            });
+
+            roomModel.position.set(0, 0, 0);
+
+            scene.add(roomModel);
+            buildGroundCollisionMeshes();
+            placeKartAtTrackStart();
+
+            const vrButton = VRButton.createButton(renderer);
+            vrButton.style.display = 'none';
+            document.body.appendChild(vrButton);
+
+            const enterVRBtn = document.getElementById("enterVR");
+            const toggleWalkingBtn = document.getElementById("toggleWalking");
+            const toggleHandsBtn = document.getElementById("toggleHands");
+            const infoNote = document.getElementById("infoNote");
+
+            enterVRBtn.onclick = () => {
+                document.getElementById('bgm').play();
+                requestMotionPermission(true);
+                if (!handTrackingEnabled) {
+                    toggleHandTracking();
+                }
+                vrButton.click();
+                enterVRBtn.style.display = "none";
+                toggleWalkingBtn.style.display = "none";
+                toggleHandsBtn.style.display = "none";
+                infoNote.style.display = "none";
+            };
+
+            toggleWalkingBtn.onclick = () => {
+                requestMotionPermission();
+            };
+
+            toggleHandsBtn.onclick = () => {
+                toggleHandTracking();
+            };
+        }
+    );
+}
+
+function loadKart() {
+    const loader = new GLTFLoader();
+    loader.load(
+        'kart.glb',
+        (gltf) => {
+            kartModel = gltf.scene;
+
+            kartModel.traverse((child) => {
+                if (child.isMesh) {
+                    child.castShadow = true;
+                    child.receiveShadow = true;
+                    if (child.material) child.material.side = THREE.DoubleSide;
+                }
+            });
+
+            // Normalize kart scale and origin so rig.y can represent wheel contact with the track.
+            const rawBounds = new THREE.Box3().setFromObject(kartModel);
+            const rawSize = rawBounds.getSize(new THREE.Vector3());
+            const maxDimension = Math.max(rawSize.x, rawSize.y, rawSize.z);
+            const targetLength = 2.4;
+            const scale = maxDimension > 0 ? targetLength / maxDimension : 1;
+            kartModel.scale.setScalar(scale);
+
+            const scaledBounds = new THREE.Box3().setFromObject(kartModel);
+            const scaledCenter = scaledBounds.getCenter(new THREE.Vector3());
+            kartModel.position.sub(scaledCenter);
+            const centeredBounds = new THREE.Box3().setFromObject(kartModel);
+            kartModel.position.y -= centeredBounds.min.y;
+
+            const finalBounds = new THREE.Box3().setFromObject(kartModel);
+            const seatHeight = THREE.MathUtils.clamp(finalBounds.max.y * 0.63, 0.85, 1.35);
+            camera.position.set(0, seatHeight, 0.05);
+
+            cameraRig.add(kartModel);
+        },
+        undefined,
+        (err) => {
+            console.error("Error loading kart GLB", err);
+        }
+    );
+}
+
+function buildGroundCollisionMeshes() {
+    groundCollisionMeshes = [];
+    if (!roomModel) return;
+
+    roomModel.traverse((child) => {
+        if (child.isMesh) {
+            groundCollisionMeshes.push(child);
+        }
+    });
+
+    const bounds = new THREE.Box3().setFromObject(roomModel);
+    groundProbeHeight = bounds.max.y + 120;
+}
+
+function getGroundHit(x, z, maxHeight = groundProbeHeight) {
+    if (!groundCollisionMeshes.length) return null;
+
+    groundProbeOrigin.set(x, maxHeight, z);
+    groundRaycaster.set(groundProbeOrigin, downVector);
+    const intersections = groundRaycaster.intersectObjects(groundCollisionMeshes, false);
+    if (!intersections.length) return null;
+
+    for (const hit of intersections) {
+        if (!hit.face) return hit;
+        tmpNormal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld);
+        if (tmpNormal.y >= TRACK_NORMAL_MIN_Y) return hit;
+    }
+
+    return intersections[0];
+}
+
+function placeKartAtTrackStart() {
+    if (!roomModel || !groundCollisionMeshes.length || hasPlacedTrackStart) return;
+
+    const bounds = new THREE.Box3().setFromObject(roomModel);
+    const center = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3());
+    const sampleHeight = bounds.max.y + 120;
+    const spanX = size.x * TRACK_SAMPLE_COVERAGE;
+    const spanZ = size.z * TRACK_SAMPLE_COVERAGE;
+
+    let bestHit = null;
+    let bestScore = -Infinity;
+    for (let gx = 0; gx < TRACK_SAMPLE_GRID; gx++) {
+        for (let gz = 0; gz < TRACK_SAMPLE_GRID; gz++) {
+            const fx = TRACK_SAMPLE_GRID > 1 ? gx / (TRACK_SAMPLE_GRID - 1) : 0.5;
+            const fz = TRACK_SAMPLE_GRID > 1 ? gz / (TRACK_SAMPLE_GRID - 1) : 0.5;
+            const x = center.x + (fx - 0.5) * spanX;
+            const z = center.z + (fz - 0.5) * spanZ;
+            const hit = getGroundHit(x, z, sampleHeight);
+            if (!hit || !hit.face) continue;
+
+            tmpNormal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld);
+            if (tmpNormal.y < TRACK_NORMAL_MIN_Y) continue;
+
+            const radialDistance = Math.hypot(x - center.x, z - center.z);
+            const radialNorm = radialDistance / Math.max(1e-5, Math.hypot(spanX, spanZ));
+            const score = tmpNormal.y * 2.0 - radialNorm;
+            if (score > bestScore) {
+                bestScore = score;
+                bestHit = hit;
+            }
+        }
+    }
+
+    if (!bestHit) {
+        bestHit = getGroundHit(center.x, center.z, sampleHeight);
+    }
+    if (!bestHit) return;
+
+    cameraRig.position.copy(bestHit.point);
+    cameraRig.position.y += 0.02;
+
+    tmpVectorA.copy(center).sub(cameraRig.position);
+    tmpVectorA.y = 0;
+    if (tmpVectorA.lengthSq() < 0.001) tmpVectorA.set(0, 0, -1);
+    tmpVectorA.normalize();
+    cameraRig.lookAt(
+        cameraRig.position.x + tmpVectorA.x,
+        cameraRig.position.y,
+        cameraRig.position.z + tmpVectorA.z
+    );
+
+    hasPlacedTrackStart = true;
+}
+
+function createLowResPokeball() {
+    const group = new THREE.Group();
+    group.scale.setScalar(WORLD_SCALE);
+    // Top half (Red)
+    const top = new THREE.Mesh(
+        new THREE.SphereGeometry(0.12, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2),
+        new THREE.MeshLambertMaterial({ color: 0xff0000 })
+    );
+    // Bottom half (White)
+    const bottom = new THREE.Mesh(
+        new THREE.SphereGeometry(0.12, 8, 4, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2),
+        new THREE.MeshLambertMaterial({ color: 0xffffff })
+    );
+    // Center band (Black)
+    const band = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.121, 0.121, 0.02, 8),
+        new THREE.MeshLambertMaterial({ color: 0x000000 })
+    );
+    band.rotation.x = Math.PI / 2;
+
+    group.add(top);
+    group.add(bottom);
+    group.add(band);
+
+    pokeball = group;
+    pokeball.visible = false;
+    scene.add(pokeball);
+}
+
+function loadPokeball() {
+    const isLowRes = urlParams.get('lowres') === '1';
+    if (isLowRes) {
+        createLowResPokeball();
+        return;
+    }
+
+    const loader = new GLTFLoader();
+    loader.load(
+        'pokeball.glb',
+        (gltf) => {
+            pokeball = gltf.scene;
+            pokeball.scale.setScalar(0.04 * WORLD_SCALE);
+            pokeball.visible = false;
+            pokeball.traverse((child) => {
+                if (child.isMesh) {
+                    child.castShadow = false; // Optimization
+                    child.receiveShadow = false;
+                    if (child.material) {
+                        child.material.metalness = 0;
+                        child.material.roughness = 1;
+                    }
+                }
+            });
+            scene.add(pokeball);
+        },
+        undefined,
+        (err) => {
+            console.error("Error loading pokeball GLB, falling back to low-res", err);
+            createLowResPokeball();
+        }
+    );
+}
+
+function requestMotionPermission(forceEnable = false) {
+    const applyPermissionResult = () => {
+        if (forceEnable) {
+            setWalkingMode(true);
+        } else {
+            setWalkingMode(!walkingModeEnabled);
+        }
+    };
+
+    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+        DeviceMotionEvent.requestPermission()
+            .then(permissionState => {
+                if (permissionState === 'granted') {
+                    applyPermissionResult();
+                } else {
+                    alert('Motion permission denied');
+                }
+            })
+            .catch(console.error);
+    } else {
+        // Non-iOS path.
+        applyPermissionResult();
+    }
+}
+
+function setWalkingMode(enabled) {
+    walkingModeEnabled = enabled;
+    const btn = document.getElementById("toggleWalking");
+    btn.innerText = `Motion Drive: ${walkingModeEnabled ? 'ON' : 'OFF'}`;
+    btn.style.background = walkingModeEnabled ? '#e60012' : 'rgba(255,255,255,0.9)';
+    btn.style.color = walkingModeEnabled ? 'white' : '#e60012';
+
+    if (walkingModeEnabled) {
+        window.addEventListener('devicemotion', handleMotion);
+    } else {
+        window.removeEventListener('devicemotion', handleMotion);
+        smoothedMotionMagnitude = 0;
+    }
+}
+
+function toggleWalkingMode() {
+    setWalkingMode(!walkingModeEnabled);
+}
+
+function handleMotion(event) {
+    if (!walkingModeEnabled || !renderer || !renderer.xr.isPresenting) return;
+
+    let acc = event.acceleration;
+    let threshold = SHAKE_THRESHOLD_RAW;
+
+    // Fallback to accelerationIncludingGravity when pure acceleration is unavailable.
+    if (!acc || (acc.x === null && acc.y === null && acc.z === null)) {
+        acc = event.accelerationIncludingGravity;
+        threshold = SHAKE_THRESHOLD_WITH_GRAVITY;
+    }
+
+    if (!acc || acc.x === null || acc.y === null || acc.z === null) return;
+
+    const magnitude = Math.sqrt(acc.x * acc.x + acc.y * acc.y + acc.z * acc.z);
+    smoothedMotionMagnitude = smoothedMotionMagnitude === 0
+        ? magnitude
+        : THREE.MathUtils.lerp(smoothedMotionMagnitude, magnitude, 0.12);
+    const spike = Math.abs(magnitude - smoothedMotionMagnitude);
+    const now = performance.now();
+
+    if (spike > threshold && (now - lastShakeTime) > SHAKE_COOLDOWN_MS) {
+        lastShakeTime = now;
+        kartBoostTime = Math.min(kartBoostTime + 1.25, 2.5);
+        kartSpeed = Math.min(Math.max(kartSpeed, KART_SHAKE_IMPULSE), KART_BOOST_SPEED);
+    }
+}
+
+function getSteeringFromHands() {
+    if (!handTrackingEnabled || handScreenPositions.length === 0) return 0;
+
+    if (handScreenPositions.length === 1) {
+        return handScreenPositions[0].x < 0.5 ? -1 : 1;
+    }
+
+    // Two-hand rule: steer using the lower hand (higher screen-space y).
+    let lowerHand = handScreenPositions[0];
+    for (let i = 1; i < handScreenPositions.length; i++) {
+        if (handScreenPositions[i].y > lowerHand.y) {
+            lowerHand = handScreenPositions[i];
+        }
+    }
+    return lowerHand.x < 0.5 ? -1 : 1;
+}
+
+function stickKartToGround(delta) {
+    if (!hasPlacedTrackStart || !cameraRig) return;
+
+    const hit = getGroundHit(cameraRig.position.x, cameraRig.position.z);
+    if (!hit) return;
+
+    const targetY = hit.point.y + 0.02;
+    const error = targetY - cameraRig.position.y;
+    kartVerticalVelocity += error * GROUND_SUSPENSION_STIFFNESS * delta;
+    kartVerticalVelocity *= Math.exp(-GROUND_SUSPENSION_DAMPING * delta);
+    cameraRig.position.y += kartVerticalVelocity * delta;
+
+    if (cameraRig.position.y < targetY) {
+        cameraRig.position.y = targetY;
+        if (kartVerticalVelocity < 0) kartVerticalVelocity = 0;
+    }
+}
+
+function updateKartMovement(delta) {
+    if (!cameraRig || !hasPlacedTrackStart) return;
+
+    kartSteerTarget = getSteeringFromHands();
+    kartSteer = THREE.MathUtils.lerp(kartSteer, kartSteerTarget, Math.min(1, KART_STEER_SMOOTH * delta));
+
+    if (kartBoostTime > 0) {
+        kartBoostTime = Math.max(0, kartBoostTime - delta);
+    }
+
+    const maxSpeed = kartBoostTime > 0 ? KART_BOOST_SPEED : KART_MAX_SPEED;
+    if (kartBoostTime > 0) {
+        kartSpeed = Math.min(maxSpeed, kartSpeed + 18 * delta);
+    }
+
+    const drag = KART_ROLLING_DRAG + kartSpeed * KART_AIR_DRAG;
+    kartSpeed = Math.max(0, kartSpeed - drag * delta);
+
+    const speedRatio = THREE.MathUtils.clamp(kartSpeed / KART_MAX_SPEED, 0, 1);
+    const turnAmount = kartSteer * KART_TURN_RATE * (0.25 + speedRatio * 0.9) * delta;
+    cameraRig.rotation.y += turnAmount;
+
+    kartForward.set(0, 0, -1).applyQuaternion(cameraRig.quaternion);
+    kartForward.y = 0;
+    if (kartForward.lengthSq() > 0.0001) kartForward.normalize();
+
+    kartRight.set(1, 0, 0).applyQuaternion(cameraRig.quaternion);
+    kartRight.y = 0;
+    if (kartRight.lengthSq() > 0.0001) kartRight.normalize();
+
+    kartLateralVelocity = THREE.MathUtils.lerp(
+        kartLateralVelocity,
+        kartSteer * kartSpeed * KART_LATERAL_SLIP,
+        Math.min(1, delta * 4)
+    );
+    kartLateralVelocity *= Math.max(0, 1 - KART_LATERAL_DAMPING * delta);
+
+    cameraRig.position.addScaledVector(kartForward, kartSpeed * delta);
+    cameraRig.position.addScaledVector(kartRight, kartLateralVelocity * delta);
+
+    stickKartToGround(delta);
+
+    if (kartModel) {
+        const targetRoll = -kartSteer * speedRatio * 0.22;
+        kartModel.rotation.z = THREE.MathUtils.lerp(kartModel.rotation.z, targetRoll, Math.min(1, delta * 10));
+    }
+}
+
+function animate() {
+    renderer.setAnimationLoop(() => {
+        const delta = Math.min(clock.getDelta(), 0.05);
+        updateKartMovement(delta);
+
+        // Pokeball logic
+        if (handTrackingEnabled && pokeball) {
+            for (let h = 0; h < 2; h++) {
+                if (handMarkers[h][0].visible) {
+                    const palmPos = new THREE.Vector3();
+                    handMarkers[h][9].getWorldPosition(palmPos);
+
+                    if (handResultCount[h] !== lastProcessedHandResultCount[h]) {
+                        const now = performance.now();
+                        if (lastHandUpdateTime[h] !== 0) {
+                            const dt = (now - lastHandUpdateTime[h]) / 1000;
+                            if (dt > 0) {
+                                const vel = new THREE.Vector3().subVectors(palmPos, lastPalmPositions[h]).divideScalar(dt);
+                                palmVelocities[h].lerp(vel, 0.8);
+                            }
+                        }
+                        lastPalmPositions[h].copy(palmPos);
+                        lastHandUpdateTime[h] = now;
+                        lastProcessedHandResultCount[h] = handResultCount[h];
+                    }
+
+                    const isOpen = checkHandOpen(h);
+                    const isClosed = checkHandClosed(h);
+                    const isUp = checkPalmUp(h);
+
+                    // Recatch logic: allow grabbing from THROWN state if close and closed
+                    if (pokeballState === 'THROWN') {
+                        const dist = palmPos.distanceTo(pokeball.position);
+                        if (dist < 0.3 && isClosed) {
+                            pokeballState = 'HELD';
+                            grabbingHandIndex = h;
+                        }
+                    }
+
+                    if (pokeballState === 'INACTIVE') {
+                        if (isUp && isOpen) {
+                            pokeballState = 'FALLING';
+                            grabbingHandIndex = h;
+                            pokeball.visible = true;
+                            // Start above the hand
+                            pokeball.position.copy(palmPos).add(new THREE.Vector3(0, 0.4, 0));
+                            pokeballVelocity.set(0, 0, 0);
+                        }
+                    } else if (pokeballState === 'FALLING' && grabbingHandIndex === h) {
+                        pokeball.visible = true;
+                        const target = palmPos;
+                        pokeball.position.lerp(target, 0.3);
+                        if (pokeball.position.distanceTo(target) < 0.04) {
+                            pokeballState = 'READY_TO_GRAB';
+                        }
+                    } else if (pokeballState === 'READY_TO_GRAB' && grabbingHandIndex === h) {
+                        pokeball.visible = true;
+                        pokeball.position.copy(palmPos);
+                        if (isClosed) {
+                            pokeballState = 'HELD';
+                        }
+                    } else if (pokeballState === 'HELD' && grabbingHandIndex === h) {
+                        pokeball.visible = true;
+                        pokeball.position.copy(palmPos);
+                        if (isOpen) {
+                            const speed = palmVelocities[h].length();
+                            pokeballState = 'THROWN';
+                            const baseMultiplier = 12.0;
+                            const currentMultiplier = baseMultiplier * HEIGHT_FACTOR;
+
+                            if (speed > 0.5) {
+                                pokeballVelocity.copy(palmVelocities[h]).multiplyScalar(currentMultiplier);
+                            } else {
+                                pokeballVelocity.copy(palmVelocities[h]).multiplyScalar(currentMultiplier * 0.2);
+                            }
+                            // Add upward boost to ensure an arc
+                            pokeballVelocity.y += 2.0 * HEIGHT_FACTOR;
+                            grabbingHandIndex = -1;
+                            setTimeout(() => {
+                                if (pokeballState === 'THROWN') {
+                                    pokeballState = 'INACTIVE';
+                                    pokeball.visible = false;
+                                }
+                            }, 5000);
+                        }
+                    }
+                } else if (grabbingHandIndex === h) {
+                    // Hand lost, drop ball
+                    if (pokeballState === 'FALLING' || pokeballState === 'READY_TO_GRAB' || pokeballState === 'HELD') {
+                        pokeballState = 'THROWN';
+                        pokeballVelocity.set(0, 0, 0);
+                        grabbingHandIndex = -1;
+                        setTimeout(() => {
+                            if (pokeballState === 'THROWN') {
+                                pokeballState = 'INACTIVE';
+                                pokeball.visible = false;
+                            }
+                        }, 5000);
+                    }
+                }
+            }
+        }
+
+        if (pokeballState === 'THROWN') {
+            pokeballVelocity.y += GRAVITY * delta;
+            pokeball.position.addScaledVector(pokeballVelocity, delta);
+
+            if (pokeball.position.y < 0) {
+                pokeball.position.y = 0;
+                // Bounce
+                if (Math.abs(pokeballVelocity.y) > 1.0) {
+                    pokeballVelocity.y *= -0.5;
+                } else {
+                    pokeballVelocity.y = 0;
+                }
+            }
+
+            // Simple rotation
+            pokeball.rotation.x += pokeballVelocity.z * 6.0 * delta;
+            pokeball.rotation.z -= pokeballVelocity.x * 6.0 * delta;
+
+            // Stop if moving very slowly on ground
+            if (pokeball.position.y <= 0 && pokeballVelocity.length() < 0.01) {
+                pokeballVelocity.set(0, 0, 0);
+            }
+        }
+
+        renderer.render(scene, camera);
+    });
+}
+
+function onResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+</script>
+
+</body>
+</html>

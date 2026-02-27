@@ -496,7 +496,7 @@ function loadKart() {
             const seatHeight = THREE.MathUtils.clamp(finalBounds.max.y * 0.63, 0.85, 1.35);
             camera.position.set(0, seatHeight, 0.05);
 
-            kartModel.rotation.y = Math.PI / 2;
+            kartModel.rotation.y = -Math.PI / 2;
             cameraRig.add(kartModel);
         },
         undefined,
@@ -528,7 +528,8 @@ function getGroundHit(x, z, maxHeight = groundProbeHeight) {
     const intersections = groundRaycaster.intersectObjects(groundCollisionMeshes, false);
     if (!intersections.length) return null;
 
-    for (const hit of intersections) {
+    for (let i = intersections.length - 1; i >= 0; i--) {
+        const hit = intersections[i];
         if (!hit.face) return hit;
         tmpNormal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld);
         if (tmpNormal.y >= TRACK_NORMAL_MIN_Y) return hit;

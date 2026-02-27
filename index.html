@@ -109,12 +109,12 @@ let lastHandUpdateTime = [0, 0];
 let handResultCount = [0, 0];
 let lastProcessedHandResultCount = [0, 0];
 const GRAVITY = -9.8;
-const KART_MAX_SPEED = 24;
-const KART_BOOST_SPEED = 32;
-const KART_SHAKE_IMPULSE = 8;
-const KART_ROLLING_DRAG = 3.2;
-const KART_AIR_DRAG = 0.18;
-const KART_TURN_RATE = 1.65;
+const KART_MAX_SPEED = 12;
+const KART_BOOST_SPEED = 18;
+const KART_SHAKE_IMPULSE = 4;
+const KART_ROLLING_DRAG = 2.0;
+const KART_AIR_DRAG = 0.1;
+const KART_TURN_RATE = 1.0;
 const KART_STEER_SMOOTH = 8.0;
 const KART_LATERAL_SLIP = 0.16;
 const KART_LATERAL_DAMPING = 5.0;
@@ -348,7 +348,7 @@ function init() {
 
     // --- CAMERA RIG ---
     cameraRig = new THREE.Group();
-    cameraRig.position.set(0, 8, 0);
+    cameraRig.position.set(0, 0, 0);
     camera.position.set(0, 1.0, 0.05);
     cameraRig.add(camera);
     scene.add(cameraRig);
@@ -496,6 +496,7 @@ function loadKart() {
             const seatHeight = THREE.MathUtils.clamp(finalBounds.max.y * 0.63, 0.85, 1.35);
             camera.position.set(0, seatHeight, 0.05);
 
+            kartModel.rotation.y = Math.PI / 2;
             cameraRig.add(kartModel);
         },
         undefined,

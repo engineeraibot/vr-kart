@@ -128,9 +128,12 @@ let kartSteerTarget = 0;
 let kartLateralVelocity = 0;
 let smoothedMotionMagnitude = 0;
 let lastShakeTime = 0;
+let pendingVrRecenter = false;
+let vrRecenterDelayFrames = 0;
 
 const kartForward = new THREE.Vector3();
 const kartRight = new THREE.Vector3();
+const xrHeadWorld = new THREE.Vector3();
 
 const HAND_CONNECTIONS = [
     [0, 1], [1, 2], [2, 3], [3, 4],       // Thumb
@@ -370,6 +373,18 @@ function init() {
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.xr.enabled = true;
     renderer.xr.setReferenceSpaceType('local');
+    renderer.xr.addEventListener('sessionstart', () => {
+        pendingVrRecenter = true;
+        vrRecenterDelayFrames = 2;
+        cameraRig.position.set(0, 0, 0);
+        kartSpeed = 0;
+        kartBoostTime = 0;
+        kartLateralVelocity = 0;
+    });
+    renderer.xr.addEventListener('sessionend', () => {
+        pendingVrRecenter = false;
+        vrRecenterDelayFrames = 0;
+    });
     renderer.shadowMap.enabled = true;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.2;
@@ -637,6 +652,16 @@ function updateKartMovement(delta) {
 
 function animate() {
     renderer.setAnimationLoop(() => {
+        if (pendingVrRecenter && renderer.xr.isPresenting) {
+            if (vrRecenterDelayFrames > 0) {
+                vrRecenterDelayFrames--;
+            } else {
+                renderer.xr.getCamera(camera).getWorldPosition(xrHeadWorld);
+                cameraRig.position.sub(xrHeadWorld);
+                pendingVrRecenter = false;
+            }
+        }
+
         const delta = Math.min(clock.getDelta(), 0.05);
         updateKartMovement(delta);
 

@@ -130,10 +130,16 @@ let smoothedMotionMagnitude = 0;
 let lastShakeTime = 0;
 let pendingVrRecenter = false;
 let vrRecenterDelayFrames = 0;
+const vrSessionStartRigPosition = new THREE.Vector3();
+const xrOffsetFromRig = new THREE.Vector3();
+const START_LINE_MESH_NAME = 'Object_23';
+const START_LINE_FALLBACK = new THREE.Vector3(0.908, 0.014, 0.812);
 
 const kartForward = new THREE.Vector3();
 const kartRight = new THREE.Vector3();
 const xrHeadWorld = new THREE.Vector3();
+const tmpBox = new THREE.Box3();
+const tmpCenter = new THREE.Vector3();
 
 const HAND_CONNECTIONS = [
     [0, 1], [1, 2], [2, 3], [3, 4],       // Thumb
@@ -376,7 +382,7 @@ function init() {
     renderer.xr.addEventListener('sessionstart', () => {
         pendingVrRecenter = true;
         vrRecenterDelayFrames = 2;
-        cameraRig.position.set(0, 0, 0);
+        vrSessionStartRigPosition.copy(cameraRig.position);
         kartSpeed = 0;
         kartBoostTime = 0;
         kartLateralVelocity = 0;
@@ -427,6 +433,7 @@ function loadRoom() {
             roomModel.position.set(0, 0, 0);
 
             scene.add(roomModel);
+            placeCameraRigAtStartLine();
 
             const vrButton = VRButton.createButton(renderer);
             vrButton.style.display = 'none';
@@ -459,6 +466,20 @@ function loadRoom() {
             };
         }
     );
+}
+
+function placeCameraRigAtStartLine() {
+    if (!roomModel || !cameraRig) return;
+
+    const startLine = roomModel.getObjectByName(START_LINE_MESH_NAME);
+    if (startLine) {
+        tmpBox.setFromObject(startLine);
+        tmpBox.getCenter(tmpCenter);
+        cameraRig.position.set(tmpCenter.x, tmpCenter.y + 0.045, tmpCenter.z);
+        return;
+    }
+
+    cameraRig.position.copy(START_LINE_FALLBACK);
 }
 
 function createLowResPokeball() {
@@ -657,7 +678,8 @@ function animate() {
                 vrRecenterDelayFrames--;
             } else {
                 renderer.xr.getCamera(camera).getWorldPosition(xrHeadWorld);
-                cameraRig.position.sub(xrHeadWorld);
+                xrOffsetFromRig.copy(xrHeadWorld).sub(vrSessionStartRigPosition);
+                cameraRig.position.copy(vrSessionStartRigPosition).sub(xrOffsetFromRig);
                 pendingVrRecenter = false;
             }
         }

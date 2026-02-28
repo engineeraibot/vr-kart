@@ -108,12 +108,12 @@ let lastHandUpdateTime = [0, 0];
 let handResultCount = [0, 0];
 let lastProcessedHandResultCount = [0, 0];
 const GRAVITY = -9.8;
-const KART_MAX_SPEED = 12;
-const KART_BOOST_SPEED = 18;
-const KART_SHAKE_IMPULSE = 4;
+const KART_MAX_SPEED = 20;
+const KART_BOOST_SPEED = 30;
+const KART_SHAKE_IMPULSE = 6;
 const KART_ROLLING_DRAG = 2.0;
 const KART_AIR_DRAG = 0.1;
-const KART_TURN_RATE = 1.0;
+const KART_TURN_RATE = 0.8;
 const KART_STEER_SMOOTH = 8.0;
 const KART_LATERAL_SLIP = 0.16;
 const KART_LATERAL_DAMPING = 5.0;
@@ -133,7 +133,7 @@ let vrRecenterDelayFrames = 0;
 const vrSessionStartRigPosition = new THREE.Vector3();
 const xrOffsetFromRig = new THREE.Vector3();
 const START_LINE_MESH_NAME = 'Object_23';
-const START_LINE_FALLBACK = new THREE.Vector3(0.908, 0.014, 0.812);
+const START_LINE_FALLBACK = new THREE.Vector3(100, 0, 0);
 
 const kartForward = new THREE.Vector3();
 const kartRight = new THREE.Vector3();
@@ -154,12 +154,86 @@ let handTrackingEnabled = false;
 
 const urlParams = new URLSearchParams(window.location.search);
 const modelName = 'circuit.glb';
-const WORLD_SCALE = 20 / 1.6;
-const HEIGHT_FACTOR = Math.sqrt(WORLD_SCALE);
+const WORLD_SCALE = 1;
+const HEIGHT_FACTOR = 1;
 
 initHandTracking();
 init();
 animate();
+
+function createTree() {
+    const group = new THREE.Group();
+    const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.2, 0.2, 1, 8),
+        new THREE.MeshStandardMaterial({ color: 0x8B4513 })
+    );
+    trunk.position.y = 0.5;
+    group.add(trunk);
+
+    const leaves = new THREE.Mesh(
+        new THREE.ConeGeometry(1, 2, 8),
+        new THREE.MeshStandardMaterial({ color: 0x228B22 })
+    );
+    leaves.position.y = 2;
+    group.add(leaves);
+    return group;
+}
+
+function createProceduralCircuit() {
+    const circuitGroup = new THREE.Group();
+
+    // Grass
+    const grassGeo = new THREE.PlaneGeometry(1000, 1000);
+    const grassMat = new THREE.MeshStandardMaterial({ color: 0x348C31 });
+    const grass = new THREE.Mesh(grassGeo, grassMat);
+    grass.rotation.x = -Math.PI / 2;
+    grass.receiveShadow = true;
+    circuitGroup.add(grass);
+
+    // Track (Oval)
+    const trackGeo = new THREE.RingGeometry(40, 60, 128);
+    const trackMat = new THREE.MeshStandardMaterial({ color: 0x333333, side: THREE.DoubleSide });
+    const track = new THREE.Mesh(trackGeo, trackMat);
+    track.rotation.x = -Math.PI / 2;
+    track.scale.set(2, 1.5, 1);
+    track.position.y = 0.01;
+    track.receiveShadow = true;
+    circuitGroup.add(track);
+
+    // Trees distribution following the oval
+    const addTrees = (count, minDist, maxDist) => {
+        for (let i = 0; i < count; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = minDist + Math.random() * (maxDist - minDist);
+            const tree = createTree();
+            // Match the track scale (2, 1.5)
+            tree.position.set(
+                Math.cos(angle) * dist * 2,
+                0,
+                Math.sin(angle) * dist * 1.5
+            );
+            circuitGroup.add(tree);
+        }
+    };
+
+    addTrees(200, 65, 100); // Outside
+    addTrees(100, 0, 35);   // Inside
+
+    return circuitGroup;
+}
+
+function loadKart() {
+    const loader = new GLTFLoader();
+    loader.load(
+        'kart.glb',
+        (gltf) => {
+            const kartModel = gltf.scene;
+            kartModel.rotation.y = -Math.PI / 2;
+            kartModel.scale.setScalar(0.5);
+            cameraRig.add(kartModel);
+        }
+    );
+}
 
 function initHandTracking() {
     // @ts-ignore
@@ -336,24 +410,25 @@ function onHandResults(results) {
 
 function init() {
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x87CEEB); // Sky blue background
+    window.scene = scene;
+    scene.background = new THREE.Color(0x87CEEB);
 
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    window.camera = camera;
 
-    // --- CAMERA RIG ---
     cameraRig = new THREE.Group();
+    window.cameraRig = cameraRig;
     cameraRig.position.set(0, 0, 0);
-    camera.position.set(0, 0, 0);
+    camera.position.set(0, 0.7, 0.2);
     cameraRig.add(camera);
     scene.add(cameraRig);
 
-    // Create Simple Hand Markers and Bones
     for (let h = 0; h < 2; h++) {
         const hand = [];
         for (let i = 0; i < 21; i++) {
             const sphere = new THREE.Mesh(
                 new THREE.SphereGeometry(0.01, 4, 4),
-                new THREE.MeshBasicMaterial({ color: 0x000000 }) // Simple black markers
+                new THREE.MeshBasicMaterial({ color: 0x000000 })
             );
             sphere.visible = false;
             camera.add(sphere);
@@ -375,6 +450,7 @@ function init() {
     }
 
     renderer = new THREE.WebGLRenderer({ antialias: true });
+    window.renderer = renderer;
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.xr.enabled = true;
@@ -396,12 +472,14 @@ function init() {
     renderer.toneMappingExposure = 1.2;
     document.body.appendChild(renderer.domElement);
 
-    // Lighting (Brighter for the interior)
-    const ambient = new THREE.AmbientLight(0xffffff, 1.5);
+    const ambient = new THREE.AmbientLight(0xffffff, 1.0);
     scene.add(ambient);
 
-    const sunLight = new THREE.DirectionalLight(0xffffff, 1.0);
-    sunLight.position.set(5, 15, 5);
+    const sunLight = new THREE.DirectionalLight(0xffffff, 2.0);
+    sunLight.position.set(50, 100, 50);
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.width = 2048;
+    sunLight.shadow.mapSize.height = 2048;
     scene.add(sunLight);
 
     loadRoom();
@@ -416,56 +494,40 @@ function init() {
 }
 
 function loadRoom() {
-    const loader = new GLTFLoader();
-    loader.load(
-        modelName,
-        (gltf) => {
-            roomModel = gltf.scene;
+    roomModel = createProceduralCircuit();
+    scene.add(roomModel);
+    loadKart();
+    placeCameraRigAtStartLine();
 
-            roomModel.traverse((child) => {
-                if (child.isMesh) {
-                    child.castShadow = true;
-                    child.receiveShadow = true;
-                    if (child.material) child.material.side = THREE.DoubleSide;
-                }
-            });
+    const vrButton = VRButton.createButton(renderer);
+    vrButton.style.display = 'none';
+    document.body.appendChild(vrButton);
 
-            roomModel.position.set(0, 0, 0);
+    const enterVRBtn = document.getElementById("enterVR");
+    const toggleWalkingBtn = document.getElementById("toggleWalking");
+    const toggleHandsBtn = document.getElementById("toggleHands");
+    const infoNote = document.getElementById("infoNote");
 
-            scene.add(roomModel);
-            placeCameraRigAtStartLine();
-
-            const vrButton = VRButton.createButton(renderer);
-            vrButton.style.display = 'none';
-            document.body.appendChild(vrButton);
-
-            const enterVRBtn = document.getElementById("enterVR");
-            const toggleWalkingBtn = document.getElementById("toggleWalking");
-            const toggleHandsBtn = document.getElementById("toggleHands");
-            const infoNote = document.getElementById("infoNote");
-
-            enterVRBtn.onclick = () => {
-                document.getElementById('bgm').play();
-                requestMotionPermission(true);
-                if (!handTrackingEnabled) {
-                    toggleHandTracking();
-                }
-                vrButton.click();
-                enterVRBtn.style.display = "none";
-                toggleWalkingBtn.style.display = "none";
-                toggleHandsBtn.style.display = "none";
-                infoNote.style.display = "none";
-            };
-
-            toggleWalkingBtn.onclick = () => {
-                requestMotionPermission();
-            };
-
-            toggleHandsBtn.onclick = () => {
-                toggleHandTracking();
-            };
+    enterVRBtn.onclick = () => {
+        document.getElementById('bgm').play();
+        requestMotionPermission(true);
+        if (!handTrackingEnabled) {
+            toggleHandTracking();
         }
-    );
+        vrButton.click();
+        enterVRBtn.style.display = "none";
+        toggleWalkingBtn.style.display = "none";
+        toggleHandsBtn.style.display = "none";
+        infoNote.style.display = "none";
+    };
+
+    toggleWalkingBtn.onclick = () => {
+        requestMotionPermission();
+    };
+
+    toggleHandsBtn.onclick = () => {
+        toggleHandTracking();
+    };
 }
 
 function placeCameraRigAtStartLine() {

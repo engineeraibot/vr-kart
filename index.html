@@ -697,18 +697,27 @@ function handleMotion(event) {
 function getSteeringFromHands() {
     if (!handTrackingEnabled || handScreenPositions.length === 0) return 0;
 
-    if (handScreenPositions.length === 1) {
-        return handScreenPositions[0].x < 0.5 ? -1 : 1;
-    }
-
-    // Two-hand rule: steer using the lower hand (higher screen-space y).
-    let lowerHand = handScreenPositions[0];
-    for (let i = 1; i < handScreenPositions.length; i++) {
-        if (handScreenPositions[i].y > lowerHand.y) {
-            lowerHand = handScreenPositions[i];
+    let targetHand = handScreenPositions[0];
+    if (handScreenPositions.length > 1) {
+        // Two-hand rule: steer using the lower hand (higher screen-space y).
+        for (let i = 1; i < handScreenPositions.length; i++) {
+            if (handScreenPositions[i].y > targetHand.y) {
+                targetHand = handScreenPositions[i];
+            }
         }
     }
-    return lowerHand.x < 0.5 ? -1 : 1;
+
+    const x = targetHand.x;
+    const deadzone = 0.1;
+    if (Math.abs(x - 0.5) < deadzone) return 0;
+
+    // Proportional steering with fixed direction (Left hand movement -> Left turn)
+    // Positive rotation.y is CCW (Left), so return positive for x < 0.5
+    if (x < 0.5) {
+        return (0.5 - deadzone - x) / (0.5 - deadzone);
+    } else {
+        return -(x - (0.5 + deadzone)) / (0.5 - deadzone);
+    }
 }
 
 function updateKartMovement(delta) {

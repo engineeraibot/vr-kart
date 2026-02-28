@@ -117,11 +117,6 @@ const KART_TURN_RATE = 1.0;
 const KART_STEER_SMOOTH = 8.0;
 const KART_LATERAL_SLIP = 0.16;
 const KART_LATERAL_DAMPING = 5.0;
-const TRACK_SAMPLE_GRID = 18;
-const TRACK_SAMPLE_COVERAGE = 0.7;
-const TRACK_NORMAL_MIN_Y = 0.55;
-const GROUND_SUSPENSION_STIFFNESS = 22;
-const GROUND_SUSPENSION_DAMPING = 8;
 const SHAKE_THRESHOLD_RAW = 2.4;
 const SHAKE_THRESHOLD_WITH_GRAVITY = 2.2;
 const SHAKE_COOLDOWN_MS = 350;
@@ -131,20 +126,11 @@ let kartBoostTime = 0;
 let kartSteer = 0;
 let kartSteerTarget = 0;
 let kartLateralVelocity = 0;
-let kartVerticalVelocity = 0;
 let smoothedMotionMagnitude = 0;
 let lastShakeTime = 0;
-let hasPlacedTrackStart = false;
-let groundCollisionMeshes = [];
-let groundProbeHeight = 400;
 
-const downVector = new THREE.Vector3(0, -1, 0);
 const kartForward = new THREE.Vector3();
 const kartRight = new THREE.Vector3();
-const tmpVectorA = new THREE.Vector3();
-const tmpNormal = new THREE.Vector3();
-const groundProbeOrigin = new THREE.Vector3();
-const groundRaycaster = new THREE.Raycaster();
 
 const HAND_CONNECTIONS = [
     [0, 1], [1, 2], [2, 3], [3, 4],       // Thumb
@@ -425,8 +411,6 @@ function loadRoom() {
             roomModel.position.set(0, 0, 0);
 
             scene.add(roomModel);
-            buildGroundCollisionMeshes();
-            placeKartAtTrackStart();
 
             const vrButton = VRButton.createButton(renderer);
             vrButton.style.display = 'none';
@@ -459,93 +443,6 @@ function loadRoom() {
             };
         }
     );
-}
-
-function buildGroundCollisionMeshes() {
-    groundCollisionMeshes = [];
-    if (!roomModel) return;
-
-    roomModel.traverse((child) => {
-        if (child.isMesh) {
-            groundCollisionMeshes.push(child);
-        }
-    });
-
-    const bounds = new THREE.Box3().setFromObject(roomModel);
-    groundProbeHeight = bounds.max.y + 120;
-}
-
-function getGroundHit(x, z, maxHeight = groundProbeHeight) {
-    if (!groundCollisionMeshes.length) return null;
-
-    groundProbeOrigin.set(x, maxHeight, z);
-    groundRaycaster.set(groundProbeOrigin, downVector);
-    const intersections = groundRaycaster.intersectObjects(groundCollisionMeshes, false);
-    if (!intersections.length) return null;
-
-    for (let i = intersections.length - 1; i >= 0; i--) {
-        const hit = intersections[i];
-        if (!hit.face) return hit;
-        tmpNormal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld);
-        if (tmpNormal.y >= TRACK_NORMAL_MIN_Y) return hit;
-    }
-
-    return intersections[0];
-}
-
-function placeKartAtTrackStart() {
-    if (!roomModel || !groundCollisionMeshes.length || hasPlacedTrackStart) return;
-
-    const bounds = new THREE.Box3().setFromObject(roomModel);
-    const center = bounds.getCenter(new THREE.Vector3());
-    const size = bounds.getSize(new THREE.Vector3());
-    const sampleHeight = bounds.max.y + 120;
-    const spanX = size.x * TRACK_SAMPLE_COVERAGE;
-    const spanZ = size.z * TRACK_SAMPLE_COVERAGE;
-
-    let bestHit = null;
-    let bestScore = -Infinity;
-    for (let gx = 0; gx < TRACK_SAMPLE_GRID; gx++) {
-        for (let gz = 0; gz < TRACK_SAMPLE_GRID; gz++) {
-            const fx = TRACK_SAMPLE_GRID > 1 ? gx / (TRACK_SAMPLE_GRID - 1) : 0.5;
-            const fz = TRACK_SAMPLE_GRID > 1 ? gz / (TRACK_SAMPLE_GRID - 1) : 0.5;
-            const x = center.x + (fx - 0.5) * spanX;
-            const z = center.z + (fz - 0.5) * spanZ;
-            const hit = getGroundHit(x, z, sampleHeight);
-            if (!hit || !hit.face) continue;
-
-            tmpNormal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld);
-            if (tmpNormal.y < TRACK_NORMAL_MIN_Y) continue;
-
-            const radialDistance = Math.hypot(x - center.x, z - center.z);
-            const radialNorm = radialDistance / Math.max(1e-5, Math.hypot(spanX, spanZ));
-            const score = tmpNormal.y * 2.0 - radialNorm;
-            if (score > bestScore) {
-                bestScore = score;
-                bestHit = hit;
-            }
-        }
-    }
-
-    if (!bestHit) {
-        bestHit = getGroundHit(center.x, center.z, sampleHeight);
-    }
-    if (!bestHit) return;
-
-    cameraRig.position.copy(bestHit.point);
-    cameraRig.position.y += 0.02;
-
-    tmpVectorA.copy(center).sub(cameraRig.position);
-    tmpVectorA.y = 0;
-    if (tmpVectorA.lengthSq() < 0.001) tmpVectorA.set(0, 0, -1);
-    tmpVectorA.normalize();
-    cameraRig.lookAt(
-        cameraRig.position.x + tmpVectorA.x,
-        cameraRig.position.y,
-        cameraRig.position.z + tmpVectorA.z
-    );
-
-    hasPlacedTrackStart = true;
 }
 
 function createLowResPokeball() {
@@ -696,26 +593,8 @@ function getSteeringFromHands() {
     return lowerHand.x < 0.5 ? -1 : 1;
 }
 
-function stickKartToGround(delta) {
-    if (!hasPlacedTrackStart || !cameraRig) return;
-
-    const hit = getGroundHit(cameraRig.position.x, cameraRig.position.z);
-    if (!hit) return;
-
-    const targetY = hit.point.y + 0.02;
-    const error = targetY - cameraRig.position.y;
-    kartVerticalVelocity += error * GROUND_SUSPENSION_STIFFNESS * delta;
-    kartVerticalVelocity *= Math.exp(-GROUND_SUSPENSION_DAMPING * delta);
-    cameraRig.position.y += kartVerticalVelocity * delta;
-
-    if (cameraRig.position.y < targetY) {
-        cameraRig.position.y = targetY;
-        if (kartVerticalVelocity < 0) kartVerticalVelocity = 0;
-    }
-}
-
 function updateKartMovement(delta) {
-    if (!cameraRig || !hasPlacedTrackStart) return;
+    if (!cameraRig) return;
 
     kartSteerTarget = getSteeringFromHands();
     kartSteer = THREE.MathUtils.lerp(kartSteer, kartSteerTarget, Math.min(1, KART_STEER_SMOOTH * delta));
@@ -753,8 +632,6 @@ function updateKartMovement(delta) {
 
     cameraRig.position.addScaledVector(kartForward, kartSpeed * delta);
     cameraRig.position.addScaledVector(kartRight, kartLateralVelocity * delta);
-
-    stickKartToGround(delta);
 }
 
 function animate() {

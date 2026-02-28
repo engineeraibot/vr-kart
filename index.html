@@ -369,6 +369,7 @@ function init() {
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.xr.enabled = true;
+    renderer.xr.setReferenceSpaceType('local');
     renderer.shadowMap.enabled = true;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.2;

@@ -91,7 +91,7 @@ import * as THREE from 'three';
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
-let scene, camera, renderer, cameraRig;
+let scene, camera, renderer, cameraRig, cameraOffsetGroup;
 let roomModel;
 let hands;
 const clock = new THREE.Clock();
@@ -230,6 +230,19 @@ function loadKart() {
             const kartModel = gltf.scene;
             kartModel.rotation.y = -Math.PI / 2;
             kartModel.scale.setScalar(0.5);
+
+            // Compute the bounding box of the kart relative to the rig
+            const box = new THREE.Box3().setFromObject(kartModel);
+            const center = new THREE.Vector3();
+            box.getCenter(center);
+            const size = new THREE.Vector3();
+            box.getSize(size);
+
+            // Center horizontally and ground the model vertically
+            kartModel.position.x = -center.x;
+            kartModel.position.z = -center.z;
+            kartModel.position.y = -box.min.y;
+
             cameraRig.add(kartModel);
         }
     );
@@ -419,8 +432,14 @@ function init() {
     cameraRig = new THREE.Group();
     window.cameraRig = cameraRig;
     cameraRig.position.set(0, 0, 0);
-    camera.position.set(0, 3, 0);
-    cameraRig.add(camera);
+
+    // Camera offset group for height preservation in VR
+    cameraOffsetGroup = new THREE.Group();
+    cameraOffsetGroup.position.set(0, 6, 0);
+    cameraRig.add(cameraOffsetGroup);
+
+    camera.position.set(0, 0, 0);
+    cameraOffsetGroup.add(camera);
     scene.add(cameraRig);
 
     for (let h = 0; h < 2; h++) {
@@ -431,7 +450,7 @@ function init() {
                 new THREE.MeshBasicMaterial({ color: 0x000000 })
             );
             sphere.visible = false;
-            camera.add(sphere);
+            cameraOffsetGroup.add(sphere);
             hand.push(sphere);
         }
         handMarkers.push(hand);
@@ -443,7 +462,7 @@ function init() {
                 new THREE.MeshBasicMaterial({ color: 0x000000 })
             );
             bone.visible = false;
-            camera.add(bone);
+            cameraOffsetGroup.add(bone);
             bones.push(bone);
         }
         handBones.push(bones);

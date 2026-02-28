@@ -93,7 +93,6 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 let scene, camera, renderer, cameraRig;
 let roomModel;
-let kartModel;
 let hands;
 const clock = new THREE.Clock();
 let handMarkers = [];
@@ -349,7 +348,7 @@ function init() {
     // --- CAMERA RIG ---
     cameraRig = new THREE.Group();
     cameraRig.position.set(0, 0, 0);
-    camera.position.set(0, 1.0, 0.05);
+    camera.position.set(0, 0, 0);
     cameraRig.add(camera);
     scene.add(cameraRig);
 
@@ -398,7 +397,6 @@ function init() {
     scene.add(sunLight);
 
     loadRoom();
-    loadKart();
     loadPokeball();
 
     window.addEventListener("resize", onResize);
@@ -459,49 +457,6 @@ function loadRoom() {
             toggleHandsBtn.onclick = () => {
                 toggleHandTracking();
             };
-        }
-    );
-}
-
-function loadKart() {
-    const loader = new GLTFLoader();
-    loader.load(
-        'kart.glb',
-        (gltf) => {
-            kartModel = gltf.scene;
-
-            kartModel.traverse((child) => {
-                if (child.isMesh) {
-                    child.castShadow = true;
-                    child.receiveShadow = true;
-                    if (child.material) child.material.side = THREE.DoubleSide;
-                }
-            });
-
-            // Normalize kart scale and origin so rig.y can represent wheel contact with the track.
-            const rawBounds = new THREE.Box3().setFromObject(kartModel);
-            const rawSize = rawBounds.getSize(new THREE.Vector3());
-            const maxDimension = Math.max(rawSize.x, rawSize.y, rawSize.z);
-            const targetLength = 2.4;
-            const scale = maxDimension > 0 ? targetLength / maxDimension : 1;
-            kartModel.scale.setScalar(scale);
-
-            const scaledBounds = new THREE.Box3().setFromObject(kartModel);
-            const scaledCenter = scaledBounds.getCenter(new THREE.Vector3());
-            kartModel.position.sub(scaledCenter);
-            const centeredBounds = new THREE.Box3().setFromObject(kartModel);
-            kartModel.position.y -= centeredBounds.min.y;
-
-            const finalBounds = new THREE.Box3().setFromObject(kartModel);
-            const seatHeight = THREE.MathUtils.clamp(finalBounds.max.y * 0.63, 0.85, 1.35);
-            camera.position.set(0, seatHeight, 0.05);
-
-            kartModel.rotation.y = -Math.PI / 2;
-            cameraRig.add(kartModel);
-        },
-        undefined,
-        (err) => {
-            console.error("Error loading kart GLB", err);
         }
     );
 }
@@ -696,10 +651,6 @@ function setWalkingMode(enabled) {
     }
 }
 
-function toggleWalkingMode() {
-    setWalkingMode(!walkingModeEnabled);
-}
-
 function handleMotion(event) {
     if (!walkingModeEnabled || !renderer || !renderer.xr.isPresenting) return;
 
@@ -804,11 +755,6 @@ function updateKartMovement(delta) {
     cameraRig.position.addScaledVector(kartRight, kartLateralVelocity * delta);
 
     stickKartToGround(delta);
-
-    if (kartModel) {
-        const targetRoll = -kartSteer * speedRatio * 0.22;
-        kartModel.rotation.z = THREE.MathUtils.lerp(kartModel.rotation.z, targetRoll, Math.min(1, delta * 10));
-    }
 }
 
 function animate() {
